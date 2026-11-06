@@ -1,207 +1,80 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System;
-using System.Collections.Generic;
-using OpenNLP.Tools.Tokenize;
-using OpenNLP.Tools.PosTagger;
-using OpenNLP.Tools.Parser;
-using OpenNLP.Tools.NameFind;
-using OpenNLP.Tools.Tokenize;
-using opennlp.tools.tokenize;
-using opennlp.tools.postag;
-using opennlp.tools.chunker;
-using opennlp.tools.namefind;
+﻿using System.Text.RegularExpressions;
 
 namespace TextToFields
 {
     public class FormField
     {
-        public string Label { get; set; }
-        public string Name { get; set; }
-        public string Type { get; set; }
-        public List<string> Options { get; set; }
+        public string Label { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Type { get; set; } = "text";
+        public List<string>? Options { get; set; }
     }
 
-    public class FormFields
+    public static class FormFields
     {
-        private static TokenizerModel TokenModel { get; set; }
-        private static EnglishMaximumEntropyPosTagger PosModel { get; set; }
-        private static EnglishTreebankParser Parser { get; set; }
-        private static EnglishNameFinder NameFinder { get; set; }
-
-        static FormFields()
+        // Word in the description -> field type. The first match in this order wins, so "Phone number" is a
+        // phone field rather than a number, and "datetime" isn't read as "date".
+        private static readonly (string Word, string Type)[] TypeWords =
         {
-            TokenModel = new TokenizerModel(typeof(FormFields).Assembly.GetManifestResourceStream("OpenNLP.en-token.bin"));
-            PosModel = new EnglishMaximumEntropyPosTagger(typeof(FormFields).Assembly.GetManifestResourceStream("OpenNLP.en-pos-maxent.bin"));
-            Parser = new EnglishTreebankParser(typeof(FormFields).Assembly.GetManifestResourceStream("OpenNLP.en-parser-chunking.bin"));
-            NameFinder = new EnglishNameFinder(typeof(FormFields).Assembly.GetManifestResourceStream("OpenNLP.en-ner-person.bin"),
-                typeof(FormFields).Assembly.GetManifestResourceStream("OpenNLP.en-ner-location.bin"),
-                typeof(FormFields).Assembly.GetManifestResourceStream("OpenNLP.en-ner-organization.bin"),
-                typeof(FormFields).Assembly.GetManifestResourceStream("OpenNLP.en-ner-date.bin"),
-                typeof(FormFields).Assembly.GetManifestResourceStream("OpenNLP.en-ner-time.bin"));
-        }
+            ("datetime", "datetime"), ("password", "password"), ("email", "email"), ("phone", "tel"), ("date", "date"),
+            ("dropdown", "select"), ("select", "select"), ("radio", "radio"), ("checkbox", "checkbox"),
+            ("number", "number"), ("text", "text"),
+        };
 
-        public static List<FormField> GenerateFormFields(string description)
+        // These only name the kind of control, so they aren't part of the label: "Colour dropdown" -> "Colour"
+        private static readonly HashSet<string> ControlWords = new(StringComparer.OrdinalIgnoreCase)
         {
-            List<FormField> fields = new List<FormField>();
+            "dropdown", "select", "radio", "checkbox", "text", "field", "input",
+        };
 
-            var tokens = TokenizeSentence(description);
-            var tags = PosTagTokens(tokens);
-            var chunks = ChunkTokens(tokens, tags);
-            var names = FindNames(chunks);
+        private static readonly HashSet<string> TypesWithOptions = new() { "select", "radio", "checkbox" };
 
-            for (int i = 0; i < tokens.Length; i++)
+        /// <summary>Turns a description with one field per line into field definitions; blank lines are skipped.</summary>
+        public static List<FormField> Generate(string description) =>
+            description.Split('\n')
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0)
+                .Select(ParseLine)
+                .Where(field => field.Name.Length > 0)
+                .ToList();
+
+        private static FormField ParseLine(string line)
+        {
+            var options = Regex.Matches(line, @"\[(.*?)\]")
+                .SelectMany(match => match.Groups[1].Value.Split(','))
+                .Select(option => option.Trim())
+                .Where(option => option.Length > 0)
+                .ToList();
+            var text = Regex.Replace(line, @"\[.*?\]", " ").Trim();
+
+            // "Age: number" names the type explicitly
+            var parts = text.Split(':', 2);
+            var label = parts.Length == 2 ? parts[0].Trim() : text;
+            var type = FindType(parts.Length == 2 ? parts[1] : text);
+
+            // Otherwise drop trailing control words, keeping the label if that's all there is: "Text" -> "Text"
+            var words = Regex.Split(label, @"\s+").ToList();
+            while (words.Count > 1 && ControlWords.Contains(words[^1]))
+                words.RemoveAt(words.Count - 1);
+            label = string.Join(' ', words).Trim();
+
+            return new FormField
             {
-                string token = tokens[i];
-                string tag = tags[i];
-
-                if (tag == "NN" || tag == "NNS")
-                {
-                    string fieldName = token.ToLower();
-                    string fieldType = "text";
-
-                    if (i < tokens.Length - 1 && (tokens[i + 1].ToLower() == "field" || tokens[i + 1].ToLower() == "input"))
-                    {
-                        i++;
-                    }
-
-                    if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "number")
-                    {
-                        fieldType = "number";
-                        i++;
-                    }
-                    else if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "dropdown")
-                    {
-                        fieldType = "dropdown";
-                        i++;
-
-                        List<string> options = new List<string>();
-                        int j = i + 1;
-                        while (j < tokens.Length && tags[j] == "NN")
-                        {
-                            options.Add(tokens[j]);
-                            j++;
-                        }
-
-                        fields.Add(new FormField { Label = fieldName, Name = fieldName, Type = fieldType, Options = options });
-                        i = j - 1;
-                    }
-                    else if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "select")
-                    {
-                        fieldType = "select";
-                        i++;
-
-                        List<string> options = new List<string>();
-                        int j = i + 1;
-                        while (j < tokens.Length && tags[j] == "NN")
-                        {
-                            options.Add(tokens[j]);
-                            j++;
-                        }
-
-                        fields.Add(new FormField { Label = fieldName, Name = fieldName, Type = fieldType, Options = options });
-                        i = j - 1;
-                    }
-                    else if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "radio")
-                    {
-                        fieldType = "radio";
-                        i++;
-
-                        List<string> options = new List<string>();
-                        int j = i + 1;
-                        while (j < tokens.Length && tags[j] == "NN")
-                        {
-                            options.Add(tokens[j]);
-                            j++;
-                        }
-
-                        fields.Add(new FormField { Label = fieldName, Name = fieldName, Type = fieldType, Options = options });
-                        i = j - 1;
-                    }
-                    else if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "date")
-                    {
-                        fieldType = "date";
-                        i++;
-                    }
-                    else if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "datetime")
-                    {
-                        fieldType = "datetime";
-                        i++;
-                    }
-                    else if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "phone")
-                    {
-                        fieldType = "phone";
-                        i++;
-                    }
-                    else if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "email")
-                    {
-                        fieldType = "email";
-                        i++;
-                    }
-                    else if (i < tokens.Length - 1 && tokens[i + 1].ToLower() == "password")
-                    {
-                        fieldType = "password";
-                        i++;
-                    }
-
-                    fields.Add(new FormField { Label = fieldName, Name = fieldName, Type = fieldType });
-                }
-            }
-
-            return fields;
+                Label = label,
+                Name = Regex.Replace(label.ToLowerInvariant(), @"[^a-z0-9]+", "_").Trim('_'),
+                Type = type,
+                Options = TypesWithOptions.Contains(type) && options.Count > 0 ? options : null,
+            };
         }
 
-        private static string[] TokenizeSentence(string sentence)
+        private static string FindType(string text)
         {
-            var tokenizer = new TokenizerME(TokenModel);
-            return tokenizer.tokenize(sentence);
-        }
-
-        private static string[] PosTagTokens(string[] tokens)
-        {
-            var posTagger = new POSTaggerME(PosModel);
-            return posTagger.tag(tokens);
-        }
-
-        private static string[] ChunkTokens(string[] tokens, string[] tags)
-        {
-            var chunks = new List<string>();
-
-            var chunker = new ChunkerME(Parser);
-            var chunksArr = chunker.chunk(tokens, tags);
-
-            foreach (var chunk in chunksArr)
+            foreach (var (word, type) in TypeWords)
             {
-                if (chunk.StartsWith("NP"))
-                {
-                    chunks.AddRange(chunk.ToString().Split(' '));
-                }
+                if (Regex.IsMatch(text, $@"\b{word}\b", RegexOptions.IgnoreCase))
+                    return type;
             }
-
-            return chunks.ToArray();
+            return "text";
         }
-
-        private static string[] FindNames(string[] chunks)
-        {
-            var names = new List<string>();
-
-            var nameFinder = new NameFinderME(NameFinder.PersonModel, NameFinder.LocationModel, NameFinder.OrganizationModel, NameFinder.DateModel, NameFinder.TimeModel);
-            var nameSpans = nameFinder.find(chunks);
-
-            foreach (var span in nameSpans)
-            {
-                for (int i = span.Start; i < span.End; i++)
-                {
-                    names.Add(chunks[i]);
-                }
-            }
-
-            return names.ToArray();
-        }
-
-
     }
 }

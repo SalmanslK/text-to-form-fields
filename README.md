@@ -1,28 +1,63 @@
 # Text to Form Fields
 
-An experiment in turning a plain-text description of a form into field definitions (label, name, type and options),
-written in C# on .NET 6.
+A small C# console app (.NET 6) that turns a plain-text description of a form into JSON field definitions.
 
-**Status: unfinished. This project doesn't compile yet.**
+## Run
 
-## What's in it
-
-- **`TextToFields/Program.cs`:** a console prompt that asks for a description. It calls `generate_form_fields`, but
-  that function and the other attempts in this file are commented out.
-- **`TextToFields/FormField.cs`:** an attempt using [OpenNLP](https://www.nuget.org/packages/OpenNLP) to tag words in
-  the description and pick out field types such as number, dropdown, radio, select, date, phone, email and password.
-
-The commented-out code in `Program.cs` includes a regex version, which looks for a field type on each line and takes
-options from `[square brackets]`.
-
-## What's left to do
-
-- Bring back one version of `generate_form_fields` in `Program.cs`.
-- Fix `FormField.cs`, which mixes the APIs of two OpenNLP packages. The OpenNLP model files it loads aren't in this
-  repo either, so they'd need adding as embedded resources.
-
-To see the current errors:
+Requires the .NET 6 runtime, or a newer SDK with it installed.
 
 ```
-dotnet build TextToFields.sln
+dotnet run --project TextToFields
 ```
+
+Type one field per line and finish with a blank line, or pipe in a file:
+
+```
+dotnet run --project TextToFields < fields.txt
+```
+
+## Example
+
+```
+Full name
+Phone number
+Date of birth
+Password
+Age: number
+Country dropdown [Pakistan, UAE]
+Gender radio [Male] [Female]
+```
+
+The first and last fields come out as:
+
+```json
+[
+  {
+    "label": "Full name",
+    "name": "full_name",
+    "type": "text"
+  },
+  {
+    "label": "Gender",
+    "name": "gender",
+    "type": "radio",
+    "options": [
+      "Male",
+      "Female"
+    ]
+  }
+]
+```
+
+## How it reads a line
+
+- **Type:** the first word it recognises from `datetime`, `password`, `email`, `phone`, `date`, `dropdown`, `select`,
+  `radio`, `checkbox`, `number` and `text`, in that order. With none of them, the field is `text`. `phone` becomes
+  `tel`, and `dropdown` becomes `select`.
+- **Explicit type:** `Age: number` uses the words after the colon for the type and those before it for the label.
+- **Label:** the line without its options and trailing control words such as `dropdown` or `field`. Words like `date`
+  stay, so `Birth date` keeps its full label.
+- **Options:** anything in `[square brackets]`, separated by commas or in separate brackets. Only `select`, `radio` and
+  `checkbox` fields use them.
+
+It matches words with regular expressions, so it won't understand free-form sentences.
